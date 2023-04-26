@@ -20,6 +20,7 @@ uint64_t write_to_fd(int fd, void const* buf, uint64_t bytes_to_write)
         if (last_bytes_written == -1)
             break;
         bytes_written += last_bytes_written;
+        next_loc += last_bytes_written;
     } while (last_bytes_written != 0 && bytes_written != bytes_to_write);
     return bytes_written;
 }
@@ -32,6 +33,7 @@ uint64_t read_from_fd(int fd, void* buf, uint64_t bytes_to_read)
         if (last_bytes_read == -1)
             break;
         bytes_read += last_bytes_read;
+        next_loc += last_bytes_read;
     } while (last_bytes_read != 0 && bytes_read != bytes_to_read);
     return bytes_read;
 }

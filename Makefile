@@ -1,4 +1,4 @@
-all: ftp-client ftp-server
+all: test/ftp-client test/ftp-server
 
-%: %.c
-	$(CC) -o test/$@ $<
+test/%: %.c
+	$(CC) -o $@ $<

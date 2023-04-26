@@ -18,22 +18,20 @@ uint64_t write_to_fd(int fd, void const* buf, uint64_t bytes_to_write)
         if (last_bytes_written == -1)
             return 0;
         bytes_written += last_bytes_written;
+        next_loc += last_bytes_written;
     } while (last_bytes_written != 0 && bytes_written != bytes_to_write);
     return bytes_written;
 }
-uint64_t read_from_fd(int fd, void* buf, uint64_t bytes_to_read, int recv_intvl)
+uint64_t read_from_fd(int fd, void* buf, uint64_t bytes_to_read)
 {
     uint64_t last_bytes_read = 0, bytes_read = 0;
     char* next_loc = (char*)buf;
     do {
-        uint64_t z = bytes_to_read - bytes_read;
-        if (z > 1000)
-            z = 1000;
-        last_bytes_read = read(fd, next_loc, z);
+        last_bytes_read = read(fd, next_loc, bytes_to_read - bytes_read);
         if (last_bytes_read == -1)
             return 0;
         bytes_read += last_bytes_read;
-        usleep(1000 * recv_intvl);
+        next_loc += last_bytes_read;
     } while (last_bytes_read != 0 && bytes_read != bytes_to_read);
     return bytes_read;
 }
@@ -57,8 +55,8 @@ char* create_command(char const* op, char const* file_name)
 
 int main(int argc, char* argv[])
 {
-    if (argc != 5) {
-        fprintf(stderr, "ftp-client\nUsage: %s <server_ip>:<server_port> <operation> <file_to_recv> <receive_interval(ms)>\n", argv[0]);
+    if (argc != 4) {
+        fprintf(stderr, "ftp-client\nUsage: %s <server_ip>:<server_port> <operation> <file_to_recv>\n", argv[0]);
         exit(1);
     }
     int conn_sock_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -69,7 +67,6 @@ int main(int argc, char* argv[])
 
     char* server_ip = strtok(argv[1], ":");
     uint16_t server_port = atoi(strtok(NULL, ":"));
-    int recv_intvl = atoi(argv[4]);
 
     struct sockaddr_in server_addr;
     memset(&server_addr.sin_zero, '\0', sizeof server_addr);
@@ -96,7 +93,7 @@ int main(int argc, char* argv[])
 
     if (!strcmp(argv[2], "get")) {
         uint64_t file_size = 0;
-        if (read_from_fd(conn_sock_fd, &file_size, sizeof file_size, recv_intvl) != sizeof file_size) {
+        if (read_from_fd(conn_sock_fd, &file_size, sizeof file_size) != sizeof file_size) {
             close(conn_sock_fd);
             PERROR("ftp-client: Error reading from socket");
             exit(-1);
@@ -107,7 +104,7 @@ int main(int argc, char* argv[])
             exit(-1);
         }
         char* file_contents = (char*)malloc(file_size);
-        if (read_from_fd(conn_sock_fd, file_contents, file_size, recv_intvl) != file_size) {
+        if (read_from_fd(conn_sock_fd, file_contents, file_size) != file_size) {
             free(file_contents);
             close(conn_sock_fd);
             PERROR("ftp-client: Error reading from socket");
