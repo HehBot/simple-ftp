@@ -46,7 +46,7 @@ char* create_command(char const* op, char const* file_name)
 {
     int op_length = strlen(op);
     int file_name_length = strlen(file_name);
-    char* command = (char*)malloc(op_length + 1 + file_name_length + 1);
+    char* command = malloc(op_length + 1 + file_name_length + 1);
     strncpy(command, op, op_length);
     command[op_length] = ' ';
     strncpy(command + op_length + 1, file_name, file_name_length + 1);
@@ -75,8 +75,8 @@ int main(int argc, char* argv[])
     inet_pton(AF_INET, server_ip, &server_addr.sin_addr);
 
     if (connect(conn_sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
-        close(conn_sock_fd);
         PERROR("ftp-client: Error connecting");
+        close(conn_sock_fd);
         exit(2);
     }
 
@@ -85,8 +85,8 @@ int main(int argc, char* argv[])
     char* command = create_command(argv[2], argv[3]);
     uint64_t command_length = strlen(command) + 1;
     if (send_to_fd(conn_sock_fd, command, command_length) != command_length) {
-        free(command);
         PERROR("ftp-client: Error writing to socket");
+        free(command);
         exit(-1);
     }
     free(command);
@@ -94,28 +94,28 @@ int main(int argc, char* argv[])
     if (!strcmp(argv[2], "get")) {
         uint64_t file_size = 0;
         if (read_from_fd(conn_sock_fd, &file_size, sizeof file_size) != sizeof file_size) {
-            close(conn_sock_fd);
             PERROR("ftp-client: Error reading from socket");
+            close(conn_sock_fd);
             exit(-1);
         }
         if (file_size == 0) {
-            close(conn_sock_fd);
             PERROR("ftp-client: Error reading file \'%s\' at server", argv[3]);
+            close(conn_sock_fd);
             exit(-1);
         }
-        char* file_contents = (char*)malloc(file_size);
+        char* file_contents = malloc(file_size);
         if (read_from_fd(conn_sock_fd, file_contents, file_size) != file_size) {
+            PERROR("ftp-client: Error reading from socket");
             free(file_contents);
             close(conn_sock_fd);
-            PERROR("ftp-client: Error reading from socket");
             exit(-1);
         }
 
         FILE* output_file = fopen(argv[3], "w");
         if (output_file == NULL) {
+            PERROR("ftp-client: Error writing to file \'%s\'", argv[3]);
             free(file_contents);
             close(conn_sock_fd);
-            PERROR("ftp-client: Error writing to file \'%s\'", argv[3]);
             exit(3);
         }
         fwrite(file_contents, file_size, 1, output_file);
@@ -127,29 +127,29 @@ int main(int argc, char* argv[])
     } else if (!strcmp(argv[2], "put")) {
         FILE* input_file = fopen(argv[3], "r");
         if (input_file == NULL) {
-            close(conn_sock_fd);
             PERROR("ftp-client: Error reading file \'%s\'", argv[3]);
+            close(conn_sock_fd);
             exit(3);
         }
 
         fseek(input_file, 0, SEEK_END);
         long input_file_size = ftell(input_file);
         fseek(input_file, 0, SEEK_SET);
-        char* buffer = (char*)malloc(input_file_size);
+        char* buffer = malloc(input_file_size);
         fread(buffer, input_file_size, 1, input_file);
         fclose(input_file);
         input_file = NULL;
 
         if (send_to_fd(conn_sock_fd, buffer, input_file_size) != input_file_size) {
+            PERROR("ftp-client: Error writing to socket");
             free(buffer);
             close(conn_sock_fd);
-            PERROR("ftp-client: Error writing to socket");
             exit(-1);
         }
         free(buffer);
     } else {
-        close(conn_sock_fd);
         PERROR("ftp-client: Error, command %s not recognised", argv[2]);
+        close(conn_sock_fd);
         exit(-1);
     }
     close(conn_sock_fd);

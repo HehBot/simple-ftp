@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,76 @@ uint64_t send_to_fd(int fd, void const* buf, uint64_t bytes_to_write)
     return bytes_to_write;
 }
 
+struct op_arg {
+    char* fn;
+    int fd;
+};
+
+void* get(void* arg)
+{
+    struct op_arg* z = (struct op_arg*)arg;
+    char* file_name = z->fn;
+    int fd = z->fd;
+
+    FILE* input_file = fopen(file_name, "r");
+    if (input_file == NULL) {
+        PERROR("ftp-server: Error reading file \'%s\'", file_name);
+        printf("FileTransferFail\n");
+        uint64_t zero = 0;
+        if (write_to_fd(fd, &zero, sizeof zero) != sizeof zero)
+            PERROR("ftp-server: Error writing to socket");
+    } else {
+        fseek(input_file, 0, SEEK_END);
+        long input_file_size = ftell(input_file);
+        fseek(input_file, 0, SEEK_SET);
+        char* buffer = malloc(input_file_size);
+        fread(buffer, input_file_size, 1, input_file);
+        fclose(input_file);
+
+        if (send_to_fd(fd, buffer, input_file_size) != input_file_size)
+            PERROR("ftp-server: Error writing to socket");
+        else
+            printf("TransferDone: %lu bytes\n", input_file_size);
+        free(buffer);
+    }
+
+    free(file_name);
+    close(fd);
+
+    return NULL;
+}
+void* put(void* arg)
+{
+    struct op_arg* z = (struct op_arg*)arg;
+    char* file_name = z->fn;
+    int fd = z->fd;
+
+    uint64_t output_file_size;
+    if (read_from_fd(fd, &output_file_size, sizeof output_file_size) != sizeof output_file_size)
+        PERROR("ftp-server: Error reading from socket");
+    else {
+        char* output_file_contents = malloc(output_file_size);
+        if (read_from_fd(fd, output_file_contents, output_file_size) != output_file_size)
+            PERROR("ftp-server: Error reading from socket");
+        else {
+            printf("ReceiveDone: %lu bytes\n", output_file_size);
+            FILE* output_file = fopen(file_name, "w");
+            if (output_file == NULL)
+                PERROR("ftp-server: Error writing to file \'%s\'", file_name);
+            else {
+                fwrite(output_file_contents, output_file_size, 1, output_file);
+                fclose(output_file);
+            }
+        }
+        free(output_file_contents);
+    }
+
+    free(file_name);
+    close(fd);
+
+    return NULL;
+}
+
 int main(int argc, char* argv[])
 {
     if (argc != 2) {
@@ -64,21 +135,21 @@ int main(int argc, char* argv[])
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(accepting_sock_fd, (struct sockaddr*)&server_addr, sizeof server_addr) == -1) {
-        close(accepting_sock_fd);
         PERROR("ftp-server: Error in binding socket to port %d", port_num);
+        close(accepting_sock_fd);
         exit(2);
     }
     printf("BindDone: %d\n", port_num);
     if (listen(accepting_sock_fd, 3) == -1) {
-        close(accepting_sock_fd);
         PERROR("ftp-server: Error in listening on socket");
+        close(accepting_sock_fd);
         exit(-1);
     }
     printf("ListenDone: %d\n", port_num);
 
 #define PCAP_INC 10
     int pcap = 3;
-    struct pollfd* pfd = (struct pollfd*)malloc(pcap * (sizeof *pfd));
+    struct pollfd* pfd = malloc(pcap * (sizeof *pfd));
     pfd[0].fd = accepting_sock_fd;
     pfd[0].events = POLLIN;
     pfd[0].revents = 0;
@@ -118,102 +189,44 @@ int main(int argc, char* argv[])
         for (int i = 1; i < pcap; ++i) {
             if (pfd[i].fd >= 0 && (pfd[i].revents & (POLLIN | POLLOUT))) {
                 uint64_t command_length = 0;
-                if (read_from_fd(pfd[i].fd, &command_length, sizeof command_length) != sizeof command_length) {
+                if (read_from_fd(pfd[i].fd, &command_length, sizeof command_length) != sizeof command_length)
                     PERROR("ftp-server: Error reading from socket");
-                    close(pfd[i].fd);
-                    continue;
-                }
-                char* command = (char*)malloc(command_length);
-                if (read_from_fd(pfd[i].fd, command, command_length) != command_length) {
-                    PERROR("ftp-server: Error reading from socket");
-                    free(command);
-                    close(pfd[i].fd);
-                    pfd[i].fd = -1;
-                    continue;
-                }
-                char* op = strtok(command, " ");
-                if (!strcmp(op, "get")) {
-                    char* file_name = strtok(NULL, " ");
-                    FILE* input_file = fopen(file_name, "r");
-                    if (input_file == NULL) {
-                        printf("FileTransferFail\n");
-                        PERROR("ftp-server: Error reading file \'%s\'", file_name);
-                        uint64_t zero = 0;
-                        if (write_to_fd(pfd[i].fd, &zero, sizeof zero) != sizeof zero) {
-                            free(command);
+                else {
+                    char* command = malloc(command_length);
+                    if (read_from_fd(pfd[i].fd, command, command_length) != command_length) {
+                        PERROR("ftp-server: Error reading from socket");
+                        close(pfd[i].fd);
+                    } else {
+                        char* op = strtok(command, " ");
+
+                        void* (*fn)(void*) = NULL;
+                        if (!strcmp(op, "get"))
+                            fn = &get;
+                        else if (!strcmp(op, "put"))
+                            fn = &put;
+
+                        if (fn != 0) {
+                            pthread_t* thr = malloc(sizeof *thr);
+                            pthread_attr_t* attr = malloc(sizeof *attr);
+                            pthread_attr_init(attr);
+                            char* file_name = strdup(command + strlen(op) + 1);
+
+                            struct op_arg o = { file_name, pfd[i].fd };
+
+                            pthread_create(thr, attr, fn, &o);
+                            pthread_detach(*thr);
+
+                            free(attr);
+                            free(thr);
+                        } else {
+                            PERROR("ftp-server: Error, command %s not recognised", op);
+                            printf("UnknownCmd\n");
                             close(pfd[i].fd);
-                            pfd[i].fd = -1;
-                            PERROR("ftp-server: Error writing to socket");
-                            continue;
                         }
-                        free(command);
-                        close(pfd[i].fd);
-                        pfd[i].fd = -1;
-                        continue;
                     }
                     free(command);
-
-                    fseek(input_file, 0, SEEK_END);
-                    long input_file_size = ftell(input_file);
-                    fseek(input_file, 0, SEEK_SET);
-                    char* buffer = (char*)malloc(input_file_size);
-                    fread(buffer, input_file_size, 1, input_file);
-                    fclose(input_file);
-                    input_file = NULL;
-
-                    if (send_to_fd(pfd[i].fd, buffer, input_file_size) != input_file_size) {
-                        free(buffer);
-                        close(pfd[i].fd);
-                        pfd[i].fd = -1;
-                        PERROR("ftp-server: Error writing to socket");
-                        continue;
-                    }
-                    printf("TransferDone: %lu bytes\n", input_file_size);
-                    free(buffer);
-                    close(pfd[i].fd);
-                    pfd[i].fd = -1;
-                } else if (!strcmp(op, "put")) {
-                    char* file_name = strtok(NULL, " ");
-                    uint64_t output_file_size;
-                    if (read_from_fd(pfd[i].fd, &output_file_size, sizeof output_file_size) != sizeof output_file_size) {
-                        free(command);
-                        close(pfd[i].fd);
-                        pfd[i].fd = -1;
-                        PERROR("ftp-server: Error reading from socket");
-                        continue;
-                    }
-                    char* output_file_contents = (char*)malloc(output_file_size);
-                    if (read_from_fd(pfd[i].fd, output_file_contents, output_file_size) != output_file_size) {
-                        free(output_file_contents);
-                        free(command);
-                        close(pfd[i].fd);
-                        pfd[i].fd = -1;
-                        PERROR("ftp-server: Error reading from socket");
-                        continue;
-                    }
-                    FILE* output_file = fopen(file_name, "w");
-                    if (output_file == NULL) {
-                        free(output_file_contents);
-                        free(command);
-                        close(pfd[i].fd);
-                        pfd[i].fd = -1;
-                        PERROR("ftp-server: Error writing to file \'%s\'", file_name);
-                        continue;
-                    }
-                    free(command);
-                    fwrite(output_file_contents, output_file_size, 1, output_file);
-                    fclose(output_file);
-                    free(output_file_contents);
-                    close(pfd[i].fd);
-                    pfd[i].fd = -1;
-                } else {
-                    free(command);
-                    close(pfd[i].fd);
-                    pfd[i].fd = -1;
-                    printf("UnknownCmd\n");
-                    PERROR("ftp-server: Error, command %s not recognised", op);
-                    continue;
                 }
+                pfd[i].fd = -1;
             }
         }
     }
