@@ -1,4 +1,8 @@
-all: test/ftp-client test/ftp-server
+all: bin/ftp-client bin/ftp-server
 
-test/%: %.c
+clean:
+	$(RM) bin/ftp-client bin/ftp-server
+
+bin/%: %.c
+	@mkdir -p $(dir $@)
 	$(CC) -g -o $@ $< -lpthread
