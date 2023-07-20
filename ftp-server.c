@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <errno.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -7,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/types.h>
+// #include <sys/types.h>
 #include <unistd.h>
 
 #define PERROR(S, ...) fprintf(stderr, S "\n", ##__VA_ARGS__)
@@ -129,7 +130,7 @@ int main(int argc, char* argv[])
     }
 
     struct sockaddr_in server_addr;
-    bzero(&server_addr, sizeof server_addr);
+    memset(&server_addr, 0, sizeof server_addr);
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port_num);
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY);

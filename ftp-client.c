@@ -1,10 +1,11 @@
 #include <arpa/inet.h>
+#include <libgen.h>
+#include <netinet/in.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #define PERROR(S, ...) fprintf(stderr, S "\n", ##__VA_ARGS__)
@@ -55,8 +56,10 @@ char* create_command(char const* op, char const* file_name)
 
 int main(int argc, char* argv[])
 {
-    if (argc != 4) {
-        fprintf(stderr, "ftp-client\nUsage: %s <server_ip>:<server_port> <operation> <file_to_recv>\n", argv[0]);
+    if (argc != 4 && argc != 5) {
+        fprintf(stderr, "ftp-client\n");
+        fprintf(stderr, "Usage: %s <server_ip>:<server_port> get <server_file_path> [local_destination_path]\n", argv[0]);
+        fprintf(stderr, "       %s <server_ip>:<server_port> put <local_file_path>\n", argv[0]);
         exit(1);
     }
     int conn_sock_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -69,7 +72,7 @@ int main(int argc, char* argv[])
     uint16_t server_port = atoi(strtok(NULL, ":"));
 
     struct sockaddr_in server_addr;
-    memset(&server_addr.sin_zero, '\0', sizeof server_addr);
+    memset(&server_addr, 0, sizeof server_addr);
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(server_port);
     inet_pton(AF_INET, server_ip, &server_addr.sin_addr);
@@ -82,16 +85,16 @@ int main(int argc, char* argv[])
 
     printf("ConnectDone: %s:%d\n", inet_ntoa(server_addr.sin_addr), ntohs(server_addr.sin_port));
 
-    char* command = create_command(argv[2], argv[3]);
-    uint64_t command_length = strlen(command) + 1;
-    if (send_to_fd(conn_sock_fd, command, command_length) != command_length) {
-        PERROR("ftp-client: Error writing to socket");
-        free(command);
-        exit(-1);
-    }
-    free(command);
-
     if (!strcmp(argv[2], "get")) {
+        char* command = create_command("get", argv[3]);
+        uint64_t command_length = strlen(command) + 1;
+        if (send_to_fd(conn_sock_fd, command, command_length) != command_length) {
+            PERROR("ftp-client: Error writing to socket");
+            free(command);
+            exit(-1);
+        }
+        free(command);
+
         uint64_t file_size = 0;
         if (read_from_fd(conn_sock_fd, &file_size, sizeof file_size) != sizeof file_size) {
             PERROR("ftp-client: Error reading from socket");
@@ -110,21 +113,43 @@ int main(int argc, char* argv[])
             close(conn_sock_fd);
             exit(-1);
         }
+        close(conn_sock_fd);
 
-        FILE* output_file = fopen(argv[3], "w");
+        FILE* output_file;
+        char* filename;
+        if (argc == 4) {
+            char* fn = strdup(argv[3]);
+            filename = strdup(basename(fn));
+            free(fn);
+        } else
+            filename = strdup(argv[4]);
+
+        output_file = fopen(filename, "w");
         if (output_file == NULL) {
-            PERROR("ftp-client: Error writing to file \'%s\'", argv[3]);
+            PERROR("ftp-client: Error writing to file \'%s\'", filename);
+            free(filename);
             free(file_contents);
             close(conn_sock_fd);
             exit(3);
         }
+        free(filename);
         fwrite(file_contents, file_size, 1, output_file);
+        free(file_contents);
         fclose(output_file);
 
         printf("FileWritten: %lu bytes\n", file_size);
-
-        free(file_contents);
     } else if (!strcmp(argv[2], "put")) {
+        char* filename = strdup(argv[3]);
+        char* command = create_command("put", basename(filename));
+        free(filename);
+        uint64_t command_length = strlen(command) + 1;
+        if (send_to_fd(conn_sock_fd, command, command_length) != command_length) {
+            PERROR("ftp-client: Error writing to socket");
+            free(command);
+            exit(-1);
+        }
+        free(command);
+
         FILE* input_file = fopen(argv[3], "r");
         if (input_file == NULL) {
             PERROR("ftp-client: Error reading file \'%s\'", argv[3]);
@@ -142,16 +167,16 @@ int main(int argc, char* argv[])
 
         if (send_to_fd(conn_sock_fd, buffer, input_file_size) != input_file_size) {
             PERROR("ftp-client: Error writing to socket");
-            free(buffer);
             close(conn_sock_fd);
+            free(buffer);
             exit(-1);
         }
+        close(conn_sock_fd);
         free(buffer);
     } else {
         PERROR("ftp-client: Error, command %s not recognised", argv[2]);
         close(conn_sock_fd);
         exit(-1);
     }
-    close(conn_sock_fd);
     return 0;
 }

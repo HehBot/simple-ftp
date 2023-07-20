@@ -7,8 +7,9 @@ Compile
     $ make -j
 
 Server
+To start server on port `9000`
 
-    $ ftp-server 9000 # to start server on port 9000
+    $ ftp-server 9000
 
 Client
 To get file `serverfile` from server at `127.0.0.1:9000`
